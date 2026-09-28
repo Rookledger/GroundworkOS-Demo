@@ -116,6 +116,29 @@ async function createDatabase() {
   return d1;
 }
 
+// Whether the visitor has pressed "Sign in" in this tab.
+const SIGNED_IN_KEY = "gw_demo_signed_in";
+
+function isSignedIn() {
+  try {
+    return sessionStorage.getItem(SIGNED_IN_KEY) === "1";
+  } catch {
+    return signedInFallback;
+  }
+}
+let signedInFallback = false;
+
+function setSignedIn(value: boolean) {
+  signedInFallback = value;
+  try {
+    if (value) sessionStorage.setItem(SIGNED_IN_KEY, "1");
+    else sessionStorage.removeItem(SIGNED_IN_KEY);
+  } catch {
+    // ignore
+  }
+}
+
+/** Puts the sample data back to how it started (stays signed in). */
 export function resetDemo() {
   try {
     sessionStorage.removeItem(STORAGE_KEY);
@@ -219,13 +242,28 @@ function session() {
   };
 }
 
-/** Better Auth's endpoints (sign-in, session, sign-out), faked. */
+/**
+ * Better Auth's endpoints (sign-in, session, sign-out), faked. Any email and
+ * password are accepted - the demo login is only there so visitors see the
+ * real sign-in screen.
+ */
 function handleAuth(path: string) {
-  if (path.startsWith("/api/auth/get-session")) return json(session());
-  if (path.startsWith("/api/auth/sign-in")) return json({ ...session(), redirect: false });
+  if (path.startsWith("/api/auth/get-session")) {
+    return json(isSignedIn() ? session() : null);
+  }
+  if (path.startsWith("/api/auth/sign-in")) {
+    setSignedIn(true);
+    return json({ ...session(), redirect: false });
+  }
   if (path.startsWith("/api/auth/sign-out")) {
-    // "Signing out" of the demo just starts it over.
-    setTimeout(resetDemo, 50);
+    // Signing out also throws away this visitor's changes, so the next
+    // person to sign in on this tab starts fresh.
+    setSignedIn(false);
+    try {
+      sessionStorage.removeItem(STORAGE_KEY);
+    } catch {
+      // ignore
+    }
     return json({ success: true });
   }
   return disabled();
