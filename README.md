@@ -19,7 +19,10 @@ no database and no accounts: it's a static site, hosted on GitHub Pages.
 - Each visitor gets their own copy. It survives a page refresh, is thrown away
   when the tab closes, and the **Reset** button on the badge starts it over.
   Visitors never see each other's changes.
-- The visitor is signed in automatically as "Demo Manager" (admin role).
+- Visitors land on the real sign-in page with the demo login already filled
+  in (`demo@groundworkos.example` / `demo1234`, set in `src/demo/seedExtras.ts`);
+  one click signs them in as "Demo Manager" (admin role). Signing out also
+  resets their sample data.
 
 ### Switched off in the demo
 

@@ -6,7 +6,6 @@ import {
   useLocation,
   useSearch,
   Redirect,
-  Link,
 } from "wouter";
 import {
   QueryClient,
@@ -48,6 +47,7 @@ import {
   AuthSubmit,
 } from "./components/ui/Auth";
 import { ConfirmProvider } from "./components/ui/ConfirmDialog";
+import { DEMO_LOGIN } from "./demo/seedExtras";
 
 const queryClient = new QueryClient();
 const basePath = import.meta.env.BASE_URL.replace(/\/$/, "");
@@ -140,12 +140,11 @@ function useSetupOpen() {
 }
 
 function SignInPage() {
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
+  // Demo: pre-filled so visitors can just press "Sign in".
+  const [email, setEmail] = useState(DEMO_LOGIN.email);
+  const [password, setPassword] = useState(DEMO_LOGIN.password);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const setupOpen = useSetupOpen();
-
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
@@ -174,20 +173,10 @@ function SignInPage() {
         subtitle="Sign in to GroundworkOS"
         onSubmit={handleSubmit}
         footer={
-          setupOpen ? (
-            <>
-              No account yet?{" "}
-              <Link to="/setup" style={{ color: "var(--accent-hover)" }}>
-                Set up GroundworkOS
-              </Link>{" "}
-              to create the first (admin) account.
-            </>
-          ) : (
-            <>
-              GroundworkOS is invite-only. If you've received an invitation
-              email, follow its link to set up your account instead.
-            </>
-          )
+          <>
+            <strong>Demo:</strong> the login details are already filled in -
+            just press Sign in.
+          </>
         }
       >
         <AuthField

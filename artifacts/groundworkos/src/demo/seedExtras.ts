@@ -22,6 +22,12 @@ export const DEMO_USER = {
   role: "admin",
 };
 
+/** Shown pre-filled on the demo sign-in page. Not a real account. */
+export const DEMO_LOGIN = {
+  email: DEMO_USER.email,
+  password: "demo1234",
+};
+
 function day(offset: number) {
   const d = new Date();
   d.setDate(d.getDate() + offset);
