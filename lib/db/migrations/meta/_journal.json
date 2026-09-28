@@ -1,0 +1,48 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1787700267456,
+      "tag": "0000_lumpy_george_stacy",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1787879509091,
+      "tag": "0001_amused_xavin",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1787913000963,
+      "tag": "0002_medical_stardust",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1788004950902,
+      "tag": "0003_quick_mikhail_rasputin",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1788416560265,
+      "tag": "0004_parched_lorna_dane",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1788671601525,
+      "tag": "0005_add_rams_records",
+      "breakpoints": true
+    }
+  ]
+}

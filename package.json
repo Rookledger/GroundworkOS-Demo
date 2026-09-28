@@ -1,0 +1,31 @@
+{
+  "name": "workspace",
+  "version": "0.0.0",
+  "license": "UNLICENSED",
+  "type": "module",
+  "engines": {
+    "node": "22",
+    "pnpm": ">=9.0.0"
+  },
+  "packageManager": "pnpm@9.15.0",
+  "scripts": {
+    "preinstall": "sh -c 'rm -f package-lock.json yarn.lock; case \"$npm_config_user_agent\" in pnpm/*) ;; *) echo \"Use pnpm instead\" >&2; exit 1 ;; esac'",
+    "dev": "PORT=5173 BASE_PATH=/ pnpm --filter @workspace/groundworkos run dev",
+    "build": "pnpm --filter @workspace/groundworkos run build",
+    "preview": "PORT=4173 pnpm --filter @workspace/groundworkos run serve",
+    "format": "prettier --write ."
+  },
+  "private": true,
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^9.39.5",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-react": "^7.37.5",
+    "eslint-plugin-react-hooks": "^5.2.0",
+    "globals": "^17.11.0",
+    "prettier": "^3.8.3",
+    "typescript": "~5.9.3",
+    "typescript-eslint": "^8.67.0",
+    "vitest": "^4.1.10"
+  }
+}

@@ -1,0 +1,1039 @@
+import { useState, useMemo } from "react";
+import {
+  Plus,
+  Clock,
+  Trash2,
+  X,
+  ChevronRight,
+  Download,
+  CheckCheck,
+} from "lucide-react";
+import { Panel } from "../components/ui/Panel";
+import { StatCard } from "../components/ui/StatCard";
+import { Btn } from "../components/ui/Btn";
+import { Badge } from "../components/ui/Badge";
+import { Modal, Field, Input, Select, Textarea } from "../components/ui/Modal";
+import { cn, formatCurrency, formatDate } from "../lib/utils";
+import { useApp } from "../store/AppContext";
+import { toTimesheet } from "../lib/apiTransforms";
+import { toast } from "sonner";
+import type { Timesheet } from "../types";
+import { useConfirm } from "../components/ui/ConfirmDialog";
+
+/**
+ * The Timesheet data model has no approval workflow field yet, so approval
+ * status shown here is a display-only derivation: a stable hash of the
+ * entry id picks a status, and entries the user has hit "Approve all" on
+ * (tracked in local component state) always show as approved. Nothing is
+ * persisted to the backend by this — it's a visual affordance until a real
+ * approvals field/endpoint exists.
+ */
+function derivedStatus(id: string): "approved" | "pending" | "query" {
+  let hash = 0;
+  for (let i = 0; i < id.length; i++) hash = (hash * 31 + id.charCodeAt(i)) | 0;
+  const bucket = Math.abs(hash) % 10;
+  if (bucket < 6) return "approved";
+  if (bucket < 9) return "pending";
+  return "query";
+}
+
+const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
+
+async function apiPost(path: string, body: unknown) {
+  const r = await fetch(`${BASE}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+async function apiDelete(path: string) {
+  const r = await fetch(`${BASE}${path}`, { method: "DELETE" });
+  if (!r.ok) throw new Error(await r.text());
+}
+
+const emptyForm = {
+  worker_name: "",
+  job_id: "",
+  work_date: new Date().toISOString().split("T")[0],
+  hours_worked: "8",
+  day_rate: "",
+  description: "",
+};
+
+function weekRange() {
+  const now = new Date();
+  const day = now.getDay() === 0 ? 6 : now.getDay() - 1;
+  const mon = new Date(now);
+  mon.setDate(now.getDate() - day);
+  mon.setHours(0, 0, 0, 0);
+  const sun = new Date(mon);
+  sun.setDate(mon.getDate() + 6);
+  sun.setHours(23, 59, 59, 999);
+  return { mon, sun };
+}
+
+function monthRange() {
+  const now = new Date();
+  const start = new Date(now.getFullYear(), now.getMonth(), 1);
+  const end = new Date(
+    now.getFullYear(),
+    now.getMonth() + 1,
+    0,
+    23,
+    59,
+    59,
+    999,
+  );
+  return { start, end };
+}
+
+function inRange(dateStr: string, from: Date, to: Date) {
+  const d = new Date(dateStr);
+  return d >= from && d <= to;
+}
+
+const TABS = [
+  { id: "week", label: "This Week" },
+  { id: "month", label: "This Month" },
+  { id: "all", label: "All Time" },
+];
+
+export function TimesheetsPage() {
+  const confirm = useConfirm();
+  const { state, dispatch } = useApp();
+  const { timesheets, jobs } = state;
+
+  const [tab, setTab] = useState<"week" | "month" | "all">("week");
+  const [jobFilter, setJobFilter] = useState("");
+  const [selected, setSelected] = useState<string | null>(null);
+  const [showModal, setShowModal] = useState(false);
+  const [form, setForm] = useState(emptyForm);
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [saving, setSaving] = useState(false);
+  const [approvedOverride, setApprovedOverride] = useState<Set<string>>(
+    new Set(),
+  );
+
+  function getStatus(id: string): "approved" | "pending" | "query" {
+    return approvedOverride.has(id) ? "approved" : derivedStatus(id);
+  }
+
+  const { mon, sun } = weekRange();
+  const { start: mStart, end: mEnd } = monthRange();
+
+  const filtered = useMemo(() => {
+    let list = [...timesheets];
+    if (tab === "week")
+      list = list.filter((t) => inRange(t.work_date, mon, sun));
+    if (tab === "month")
+      list = list.filter((t) => inRange(t.work_date, mStart, mEnd));
+    if (jobFilter) list = list.filter((t) => t.job_id === jobFilter);
+    return list.sort(
+      (a, b) =>
+        b.work_date.localeCompare(a.work_date) ||
+        b.created_at.localeCompare(a.created_at),
+    );
+  }, [timesheets, tab, jobFilter, mon, sun, mStart, mEnd]);
+
+  const weekEntries = timesheets.filter((t) => inRange(t.work_date, mon, sun));
+  const weekHours = weekEntries.reduce((s, t) => s + t.hours_worked, 0);
+  const weekCost = weekEntries.reduce((s, t) => s + (t.cost ?? 0), 0);
+  const monthEntries = timesheets.filter((t) =>
+    inRange(t.work_date, mStart, mEnd),
+  );
+  const monthCost = monthEntries.reduce((s, t) => s + (t.cost ?? 0), 0);
+  const uniqueWorkers = new Set(timesheets.map((t) => t.worker_name)).size;
+  const allWorkerNames = new Set(timesheets.map((t) => t.worker_name));
+  const weekWorkerNames = new Set(weekEntries.map((t) => t.worker_name));
+  const notSubmittedWorkers = [...allWorkerNames].filter(
+    (w) => !weekWorkerNames.has(w),
+  );
+
+  const grouped = useMemo(() => {
+    const map = new Map<string, Timesheet[]>();
+    for (const t of filtered) {
+      const key = t.work_date;
+      if (!map.has(key)) map.set(key, []);
+      map.get(key)!.push(t);
+    }
+    return [...map.entries()].sort(([a], [b]) => b.localeCompare(a));
+  }, [filtered]);
+
+  const selectedEntry = selected
+    ? timesheets.find((t) => t.id === selected)
+    : null;
+
+  // Operative x day-of-week grid for the "This Week" tab: rows are the
+  // operatives with an entry this week, columns Mon-Sun, cell = hours
+  // logged that day.
+  const weekDays = useMemo(() => {
+    const days: Date[] = [];
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(mon);
+      d.setDate(mon.getDate() + i);
+      days.push(d);
+    }
+    return days;
+  }, [mon]);
+
+  const weekGridRows = useMemo(() => {
+    if (tab !== "week") return [];
+    const map = new Map<
+      string,
+      { worker: string; cells: number[]; total: number; ids: string[] }
+    >();
+    for (const t of filtered) {
+      if (!map.has(t.worker_name)) {
+        map.set(t.worker_name, {
+          worker: t.worker_name,
+          cells: [0, 0, 0, 0, 0, 0, 0],
+          total: 0,
+          ids: [],
+        });
+      }
+      const row = map.get(t.worker_name)!;
+      const dayIdx = weekDays.findIndex(
+        (d) => d.toISOString().slice(0, 10) === t.work_date.slice(0, 10),
+      );
+      if (dayIdx >= 0) row.cells[dayIdx] += t.hours_worked;
+      row.total += t.hours_worked;
+      row.ids.push(t.id);
+    }
+    return [...map.values()].sort((a, b) => a.worker.localeCompare(b.worker));
+  }, [filtered, tab, weekDays]);
+
+  function rowStatus(ids: string[]): "approved" | "pending" | "query" {
+    if (ids.some((id) => getStatus(id) === "query")) return "query";
+    if (ids.every((id) => getStatus(id) === "approved")) return "approved";
+    return "pending";
+  }
+
+  function openNew() {
+    setForm(emptyForm);
+    setErrors({});
+    setShowModal(true);
+  }
+
+  function validate() {
+    const e: Record<string, string> = {};
+    if (!form.worker_name.trim()) e.worker_name = "Worker name is required";
+    if (!form.work_date) e.work_date = "Date is required";
+    const h = parseFloat(form.hours_worked);
+    if (!form.hours_worked || isNaN(h) || h <= 0 || h > 24)
+      e.hours_worked = "Enter valid hours (0–24)";
+    return e;
+  }
+
+  async function handleSubmit() {
+    const e = validate();
+    if (Object.keys(e).length) {
+      setErrors(e);
+      return;
+    }
+    setSaving(true);
+    try {
+      const hoursWorked = parseFloat(form.hours_worked);
+      const dayRate = form.day_rate ? parseFloat(form.day_rate) : undefined;
+      const result = await apiPost("/api/timesheets", {
+        workerName: form.worker_name.trim(),
+        jobId: form.job_id || undefined,
+        workDate: form.work_date,
+        hoursWorked,
+        dayRate,
+        description: form.description || undefined,
+      });
+      dispatch({ type: "ADD_TIMESHEET", timesheet: toTimesheet(result) });
+      setShowModal(false);
+      toast.success("Timesheet entry added");
+    } catch {
+      toast.error("Failed to add entry");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleDelete(id: string) {
+    const ok = await confirm(
+      "Delete this timesheet entry?",
+    );
+    if (!ok) return;
+    try {
+      await apiDelete(`/api/timesheets/${id}`);
+      dispatch({ type: "REMOVE_TIMESHEET", id });
+      if (selected === id) setSelected(null);
+      toast.success("Entry deleted");
+    } catch {
+      toast.error("Failed to delete entry");
+    }
+  }
+
+  function handleExport() {
+    const headers = [
+      "Date",
+      "Worker",
+      "Job",
+      "Hours",
+      "Day Rate",
+      "Cost",
+      "Description",
+    ];
+    const rows = filtered.map((t) => [
+      t.work_date,
+      t.worker_name,
+      t.job_title ? `${t.job_number} – ${t.job_title}` : "",
+      t.hours_worked,
+      t.day_rate ?? "",
+      t.cost ?? "",
+      t.description ?? "",
+    ]);
+    const csv = [headers, ...rows]
+      .map((r) => r.map((v) => `"${v}"`).join(","))
+      .join("\n");
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+    a.download = `timesheets-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+  }
+
+  function handleApproveAll() {
+    const pendingOrQuery = filtered.filter(
+      (t) => getStatus(t.id) !== "approved",
+    );
+    if (pendingOrQuery.length === 0) {
+      toast.success("Everything visible is already approved");
+      return;
+    }
+    setApprovedOverride((prev) => {
+      const next = new Set(prev);
+      for (const t of pendingOrQuery) next.add(t.id);
+      return next;
+    });
+    toast.success(`Approved ${pendingOrQuery.length} entries`);
+  }
+
+  return (
+    <div className="space-y-6 max-w-[1600px] mx-auto">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1
+            className="text-xl font-semibold tracking-tight"
+            style={{
+              color: "var(--ink)",
+              fontFamily: "var(--font-heading)",
+            }}
+          >
+            Timesheets
+          </h1>
+          <p className="text-sm mt-0.5" style={{ color: "var(--muted)" }}>
+            Labour hours and day rates across all sites
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Btn variant="outline" size="sm" onClick={handleExport}>
+            <Download strokeWidth={1.5} className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Export</span>
+          </Btn>
+          <Btn onClick={openNew}>
+            <Plus strokeWidth={1.5} className="w-4 h-4" /> Log Hours
+          </Btn>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+        <StatCard
+          accent
+          label="Hours This Week"
+          value={`${weekHours.toFixed(1)}h`}
+          sub={`${weekEntries.length} entries`}
+        />
+        <StatCard
+          label="Labour Cost — Week"
+          value={formatCurrency(weekCost)}
+          sub="based on day rates"
+        />
+        <StatCard
+          label="Labour Cost — Month"
+          value={formatCurrency(monthCost)}
+          sub={`${monthEntries.length} entries`}
+        />
+        <StatCard
+          label="Active Workers"
+          value={uniqueWorkers}
+          sub="on the books"
+        />
+        <StatCard
+          danger={notSubmittedWorkers.length > 0}
+          label="Not Submitted"
+          value={notSubmittedWorkers.length}
+          sub={
+            notSubmittedWorkers.length > 0
+              ? "haven't logged this week"
+              : "everyone's up to date"
+          }
+          actionLabel={notSubmittedWorkers.length > 0 ? "Chase" : undefined}
+          onAction={() =>
+            toast.success(
+              `Reminder sent to ${notSubmittedWorkers.length} worker${
+                notSubmittedWorkers.length === 1 ? "" : "s"
+              }`,
+            )
+          }
+        />
+      </div>
+
+      <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3 justify-between">
+        <div
+          className="flex items-center gap-1"
+          style={{ borderBottom: "1px solid var(--border)" }}
+        >
+          {TABS.map((t) => (
+            <button
+              key={t.id}
+              onClick={() => setTab(t.id as any)}
+              className="px-4 py-2 text-sm transition-colors whitespace-nowrap"
+              style={
+                tab === t.id
+                  ? {
+                      color: "var(--ink)",
+                      fontWeight: 500,
+                      borderBottom: "2px solid var(--accent)",
+                      marginBottom: "-1px",
+                    }
+                  : { color: "var(--muted)" }
+              }
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+        <div className="flex items-center gap-2">
+          <select
+            value={jobFilter}
+            onChange={(e) => setJobFilter(e.target.value)}
+            className="text-sm px-3 py-1.5 focus:outline-none"
+            style={{
+              backgroundColor: "var(--surface)",
+              border: "1px solid var(--border)",
+              color: "var(--ink)",
+              fontFamily: "var(--font-body)",
+            }}
+          >
+            <option value="">All jobs</option>
+            {jobs.map((j) => (
+              <option key={j.id} value={j.id}>
+                {j.job_number} – {j.title}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      <div
+        className={cn(
+          "grid gap-6 items-start",
+          selectedEntry ? "xl:grid-cols-3" : "xl:grid-cols-1",
+        )}
+      >
+        <div className={selectedEntry ? "xl:col-span-2" : ""}>
+          {filtered.length === 0 ? (
+            <Panel title="No entries">
+              <div className="text-center py-16">
+                <Clock strokeWidth={1.5}
+                  className="w-10 h-10 mx-auto mb-3 opacity-20"
+                  style={{ color: "var(--accent)" }}
+                />
+                <p className="text-sm font-medium" style={{ color: "var(--ink-2)" }}>
+                  No timesheet entries found
+                </p>
+                <p className="text-sm mt-1 mb-5" style={{ color: "var(--muted-2)" }}>
+                  {tab === "week"
+                    ? "No hours logged this week"
+                    : tab === "month"
+                      ? "No hours logged this month"
+                      : "No entries yet"}
+                </p>
+                <Btn size="sm" onClick={openNew}>
+                  <Plus strokeWidth={1.5} className="w-3.5 h-3.5" /> Log Hours
+                </Btn>
+              </div>
+            </Panel>
+          ) : (
+            <div className="space-y-4">
+              {tab === "week" && (
+              <Panel
+                title="Week Grid"
+                badge={`${weekGridRows.length} operative${weekGridRows.length === 1 ? "" : "s"}`}
+                noPad
+              >
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse min-w-[760px]">
+                    <thead>
+                      <tr
+                        style={{
+                          borderBottom: "1px solid var(--border)",
+                          backgroundColor: "var(--surface-2)",
+                        }}
+                      >
+                        <th
+                          className="py-2.5 px-4 text-[10px] font-bold uppercase tracking-widest"
+                          style={{ color: "var(--muted)" }}
+                        >
+                          Operative
+                        </th>
+                        {weekDays.map((d) => (
+                          <th
+                            key={d.toISOString()}
+                            className="py-2.5 px-2 text-center text-[10px] font-bold uppercase tracking-widest"
+                            style={{ color: "var(--muted)" }}
+                          >
+                            {d.toLocaleDateString("en-GB", { weekday: "short" })}
+                          </th>
+                        ))}
+                        <th
+                          className="py-2.5 px-4 text-center text-[10px] font-bold uppercase tracking-widest"
+                          style={{ color: "var(--muted)" }}
+                        >
+                          Total
+                        </th>
+                        <th
+                          className="py-2.5 px-4 text-center text-[10px] font-bold uppercase tracking-widest"
+                          style={{ color: "var(--muted)" }}
+                        >
+                          Status
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {weekGridRows.map((row, i) => {
+                        const status = rowStatus(row.ids);
+                        const isQuery = status === "query";
+                        return (
+                          <tr
+                            key={row.worker}
+                            style={{
+                              borderBottom:
+                                i < weekGridRows.length - 1
+                                  ? "1px solid var(--surface-3)"
+                                  : "none",
+                              backgroundColor: isQuery
+                                ? "var(--danger-bg)"
+                                : undefined,
+                              borderLeft: isQuery
+                                ? "3px solid var(--danger)"
+                                : "3px solid transparent",
+                            }}
+                          >
+                            <td className="py-3 px-4">
+                              <div className="flex items-center gap-2.5">
+                                <div
+                                  className="w-7 h-7 flex items-center justify-center flex-shrink-0 text-[11px] font-bold"
+                                  style={{
+                                    backgroundColor: "var(--accent-bg)",
+                                    color: "var(--accent)",
+                                    fontFamily: "var(--font-heading)",
+                                  }}
+                                >
+                                  {row.worker
+                                    .split(" ")
+                                    .map((n) => n[0])
+                                    .join("")
+                                    .toUpperCase()
+                                    .slice(0, 2)}
+                                </div>
+                                <span
+                                  className="text-sm font-semibold whitespace-nowrap"
+                                  style={{ color: "var(--ink)" }}
+                                >
+                                  {row.worker}
+                                </span>
+                              </div>
+                            </td>
+                            {row.cells.map((h, di) => (
+                              <td
+                                key={di}
+                                className="py-3 px-2 text-center text-xs tnum"
+                                style={{
+                                  color: h > 0 ? "var(--ink)" : "var(--muted-2)",
+                                }}
+                              >
+                                {h > 0 ? h.toFixed(1) : "–"}
+                              </td>
+                            ))}
+                            <td
+                              className="py-3 px-4 text-center text-sm font-semibold tnum"
+                              style={{ color: "var(--ink)" }}
+                            >
+                              {row.total.toFixed(1)}h
+                            </td>
+                            <td className="py-3 px-4 text-center">
+                              <Badge status={status} />
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                <div
+                  className="flex flex-col sm:flex-row items-stretch sm:items-center justify-end gap-2 p-4"
+                  style={{ borderTop: "1px solid var(--border)" }}
+                >
+                  <Btn variant="outline" size="sm" onClick={handleExport}>
+                    <Download strokeWidth={1.5} className="w-3.5 h-3.5" />
+                    Export for payroll
+                  </Btn>
+                  <Btn size="sm" onClick={handleApproveAll}>
+                    <CheckCheck strokeWidth={1.5} className="w-3.5 h-3.5" />
+                    Approve all
+                  </Btn>
+                </div>
+              </Panel>
+              )}
+              {grouped.map(([date, entries]) => {
+                const dayHours = entries.reduce(
+                  (s, t) => s + t.hours_worked,
+                  0,
+                );
+                const dayCost = entries.reduce((s, t) => s + (t.cost ?? 0), 0);
+                return (
+                  <Panel
+                    key={date}
+                    title={formatDate(date)}
+                    badge={`${dayHours.toFixed(1)}h${dayCost > 0 ? ` · ${formatCurrency(dayCost)}` : ""}`}
+                    noPad
+                  >
+                    {entries.map((entry, i) => {
+                      const status = getStatus(entry.id);
+                      const isQuery = status === "query";
+                      return (
+                      <div
+                        key={entry.id}
+                        onClick={() =>
+                          setSelected(selected === entry.id ? null : entry.id)
+                        }
+                        className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4 px-4 sm:px-5 py-4 sm:py-3.5 cursor-pointer transition-colors hover:bg-[var(--surface-2)] group min-h-[64px]"
+                        style={{
+                          borderBottom:
+                            i < entries.length - 1
+                              ? "1px solid var(--surface-3)"
+                              : "none",
+                          backgroundColor: isQuery
+                            ? "var(--danger-bg)"
+                            : selected === entry.id
+                              ? "var(--surface-2)"
+                              : undefined,
+                          borderLeft: isQuery
+                            ? "3px solid var(--danger)"
+                            : selected === entry.id
+                              ? "3px solid var(--accent)"
+                              : "3px solid transparent",
+                        }}
+                      >
+                        <div className="flex items-center gap-3 sm:gap-4 flex-1 min-w-0">
+                          <div
+                            className="w-10 h-10 sm:w-8 sm:h-8 flex items-center justify-center flex-shrink-0 text-xs font-bold"
+                            style={{
+                              backgroundColor: "var(--accent-bg)",
+                              color: "var(--accent)",
+                              fontFamily: "var(--font-heading)",
+                            }}
+                          >
+                            {entry.worker_name
+                              .split(" ")
+                              .map((n) => n[0])
+                              .join("")
+                              .toUpperCase()
+                              .slice(0, 2)}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 mb-0.5">
+                              <span
+                                className="text-sm font-semibold"
+                                style={{ color: "var(--ink)" }}
+                              >
+                                {entry.worker_name}
+                              </span>
+                              {entry.job_title && (
+                                <span
+                                  className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 flex-shrink-0 hidden sm:inline"
+                                  style={{
+                                    backgroundColor: "var(--surface-3)",
+                                    color: "var(--ink-2)",
+                                  }}
+                                >
+                                  {entry.job_number}
+                                </span>
+                              )}
+                            </div>
+                            {entry.description && (
+                              <p
+                                className="text-xs truncate"
+                                style={{ color: "var(--muted)" }}
+                              >
+                                {entry.description}
+                              </p>
+                            )}
+                            {entry.job_title && !entry.description && (
+                              <p
+                                className="text-xs truncate"
+                                style={{ color: "var(--muted)" }}
+                              >
+                                {entry.job_title}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-3 sm:gap-4 justify-between sm:justify-end flex-shrink-0 pl-[52px] sm:pl-0">
+                          <Badge status={status} />
+                          <div className="text-right flex-shrink-0">
+                            <div
+                              className="text-sm font-semibold tnum"
+                              style={{ color: "var(--ink)" }}
+                            >
+                              {entry.hours_worked % 1 === 0
+                                ? entry.hours_worked
+                                : entry.hours_worked.toFixed(1)}
+                              h
+                            </div>
+                            {entry.cost != null && entry.cost > 0 && (
+                              <div
+                                className="text-xs tnum"
+                                style={{ color: "var(--muted)" }}
+                              >
+                                {formatCurrency(entry.cost)}
+                              </div>
+                            )}
+                          </div>
+                          <ChevronRight
+                            strokeWidth={1.5}
+                            className="w-5 h-5 sm:w-4 sm:h-4 flex-shrink-0 opacity-40 group-hover:opacity-70 transition-opacity"
+                            style={{ color: "var(--accent)" }}
+                          />
+                        </div>
+                      </div>
+                      );
+                    })}
+                  </Panel>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {selectedEntry && (
+          <div className="xl:col-span-1">
+            <Panel
+              title="Entry Details"
+              actions={
+                <button
+                  onClick={() => setSelected(null)}
+                  className="p-1 transition-colors hover:bg-[var(--surface-2)]"
+                  style={{ color: "var(--muted)" }}
+                >
+                  <X strokeWidth={1.5} className="w-4 h-4" />
+                </button>
+              }
+            >
+              <div className="space-y-4">
+                <div
+                  className="flex items-center gap-3 pb-4"
+                  style={{ borderBottom: "1px solid var(--surface-3)" }}
+                >
+                  <div
+                    className="w-10 h-10 flex items-center justify-center text-sm font-bold flex-shrink-0"
+                    style={{
+                      backgroundColor: "var(--accent-bg)",
+                      color: "var(--accent)",
+                      fontFamily: "var(--font-heading)",
+                    }}
+                  >
+                    {selectedEntry.worker_name
+                      .split(" ")
+                      .map((n) => n[0])
+                      .join("")
+                      .toUpperCase()
+                      .slice(0, 2)}
+                  </div>
+                  <div>
+                    <div
+                      className="font-semibold"
+                      style={{
+                        color: "var(--ink)",
+                        fontFamily: "var(--font-heading)",
+                      }}
+                    >
+                      {selectedEntry.worker_name}
+                    </div>
+                    <div className="text-xs" style={{ color: "var(--muted)" }}>
+                      {formatDate(selectedEntry.work_date)}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div
+                    className="p-3 text-center"
+                    style={{ backgroundColor: "var(--bg)" }}
+                  >
+                    <div
+                      className="text-2xl font-bold font-mono"
+                      style={{
+                        color: "var(--accent)",
+                        fontFamily: "var(--font-body)",
+                      }}
+                    >
+                      {selectedEntry.hours_worked % 1 === 0
+                        ? selectedEntry.hours_worked
+                        : selectedEntry.hours_worked.toFixed(1)}
+                    </div>
+                    <div
+                      className="text-[11px] font-bold uppercase tracking-widest mt-0.5"
+                      style={{ color: "var(--muted)" }}
+                    >
+                      Hours
+                    </div>
+                  </div>
+                  <div
+                    className="p-3 text-center"
+                    style={{ backgroundColor: "var(--bg)" }}
+                  >
+                    <div
+                      className="text-2xl font-bold font-mono"
+                      style={{
+                        color: selectedEntry.cost ? "var(--ink)" : "var(--muted-2)",
+                        fontFamily: "var(--font-body)",
+                      }}
+                    >
+                      {selectedEntry.cost != null
+                        ? formatCurrency(selectedEntry.cost)
+                        : "—"}
+                    </div>
+                    <div
+                      className="text-[11px] font-bold uppercase tracking-widest mt-0.5"
+                      style={{ color: "var(--muted)" }}
+                    >
+                      Cost
+                    </div>
+                  </div>
+                </div>
+
+                {selectedEntry.day_rate != null && (
+                  <div
+                    className="flex items-center justify-between text-sm"
+                    style={{
+                      borderBottom: "1px solid var(--surface-3)",
+                      paddingBottom: "12px",
+                    }}
+                  >
+                    <span style={{ color: "var(--muted)" }}>Day rate</span>
+                    <span
+                      className="font-mono font-medium"
+                      style={{ color: "var(--ink)" }}
+                    >
+                      {formatCurrency(selectedEntry.day_rate)}/day
+                    </span>
+                  </div>
+                )}
+
+                {selectedEntry.job_title && (
+                  <div
+                    className="flex items-center justify-between text-sm"
+                    style={{
+                      borderBottom: "1px solid var(--surface-3)",
+                      paddingBottom: "12px",
+                    }}
+                  >
+                    <span style={{ color: "var(--muted)" }}>Job</span>
+                    <span
+                      className="font-medium text-right"
+                      style={{ color: "var(--ink)" }}
+                    >
+                      <span
+                        className="font-mono text-xs mr-1"
+                        style={{ color: "var(--accent)" }}
+                      >
+                        {selectedEntry.job_number}
+                      </span>
+                      {selectedEntry.job_title}
+                    </span>
+                  </div>
+                )}
+
+                {selectedEntry.description && (
+                  <div
+                    className="text-sm"
+                    style={{
+                      borderBottom: "1px solid var(--surface-3)",
+                      paddingBottom: "12px",
+                    }}
+                  >
+                    <div
+                      className="mb-1 font-medium text-xs uppercase tracking-widest"
+                      style={{ color: "var(--muted)" }}
+                    >
+                      Site Notes
+                    </div>
+                    <p style={{ color: "var(--ink-2)", lineHeight: 1.6 }}>
+                      {selectedEntry.description}
+                    </p>
+                  </div>
+                )}
+
+                <div className="text-xs" style={{ color: "var(--muted-2)" }}>
+                  Logged{" "}
+                  {new Date(selectedEntry.created_at).toLocaleDateString(
+                    "en-GB",
+                    {
+                      day: "numeric",
+                      month: "short",
+                      year: "numeric",
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    },
+                  )}
+                </div>
+
+                <button
+                  onClick={() => handleDelete(selectedEntry.id)}
+                  className="flex items-center gap-2 text-sm mt-2 px-3 py-2 w-full justify-center transition-colors hover:bg-red-50"
+                  style={{ color: "var(--danger)", border: "1px solid #fca5a5" }}
+                >
+                  <Trash2 strokeWidth={1.5} className="w-3.5 h-3.5" /> Delete Entry
+                </button>
+              </div>
+            </Panel>
+          </div>
+        )}
+      </div>
+
+      {showModal && (
+        <Modal
+          open={showModal}
+          title="Log Hours"
+          onClose={() => setShowModal(false)}
+        >
+          <div className="space-y-4">
+            <Field label="Worker Name *" error={errors.worker_name}>
+              <Input
+                value={form.worker_name}
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, worker_name: e.target.value }))
+                }
+                placeholder="e.g. John Smith"
+                error={!!errors.worker_name}
+              />
+            </Field>
+
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Date *" error={errors.work_date}>
+                <Input
+                  type="date"
+                  value={form.work_date}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, work_date: e.target.value }))
+                  }
+                  error={!!errors.work_date}
+                />
+              </Field>
+              <Field label="Hours *" error={errors.hours_worked}>
+                <Input
+                  type="number"
+                  value={form.hours_worked}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, hours_worked: e.target.value }))
+                  }
+                  placeholder="8"
+                  min="0.5"
+                  max="24"
+                  step="0.5"
+                  error={!!errors.hours_worked}
+                />
+              </Field>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Day Rate (£)">
+                <Input
+                  type="number"
+                  value={form.day_rate}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, day_rate: e.target.value }))
+                  }
+                  placeholder="e.g. 280"
+                  min="0"
+                  step="5"
+                />
+              </Field>
+              <Field label="Job (optional)">
+                <Select
+                  value={form.job_id}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, job_id: e.target.value }))
+                  }
+                >
+                  <option value="">No job linked</option>
+                  {jobs.map((j) => (
+                    <option key={j.id} value={j.id}>
+                      {j.job_number} – {j.title}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+            </div>
+
+            {form.day_rate &&
+              form.hours_worked &&
+              !isNaN(parseFloat(form.day_rate)) &&
+              !isNaN(parseFloat(form.hours_worked)) && (
+                <div
+                  className="flex items-center justify-between px-3 py-2 text-sm"
+                  style={{ backgroundColor: "var(--accent-bg)" }}
+                >
+                  <span style={{ color: "var(--accent)" }}>Calculated cost</span>
+                  <span
+                    className="font-semibold font-mono"
+                    style={{ color: "var(--accent)" }}
+                  >
+                    {formatCurrency(
+                      Math.round(
+                        (parseFloat(form.hours_worked) / 8) *
+                          parseFloat(form.day_rate) *
+                          100,
+                      ) / 100,
+                    )}
+                  </span>
+                </div>
+              )}
+
+            <Field label="Site Notes / Description">
+              <Textarea
+                value={form.description}
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, description: e.target.value }))
+                }
+                placeholder="What work was carried out..."
+                rows={3}
+              />
+            </Field>
+
+            <div className="flex gap-3 pt-2">
+              <Btn
+                variant="outline"
+                className="flex-1"
+                onClick={() => setShowModal(false)}
+              >
+                Cancel
+              </Btn>
+              <Btn className="flex-1" onClick={handleSubmit} disabled={saving}>
+                {saving ? "Saving…" : "Log Entry"}
+              </Btn>
+            </div>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}

@@ -1,0 +1,804 @@
+import { useState } from "react";
+import {
+  Plus,
+  Truck,
+  AlertTriangle,
+  Wrench,
+  X,
+  ChevronRight,
+  Trash2,
+} from "lucide-react";
+import { useLocation } from "wouter";
+import { Panel } from "../components/ui/Panel";
+import { Badge } from "../components/ui/Badge";
+import { Btn } from "../components/ui/Btn";
+import { EmptyState } from "../components/ui/EmptyState";
+import { Modal, Field, Input, Select, Textarea } from "../components/ui/Modal";
+import { StatCard } from "../components/ui/StatCard";
+import { cn, formatDate, formatCurrency, daysUntil } from "../lib/utils";
+import { useApp } from "../store/AppContext";
+import {
+  createPlantItem,
+  updatePlantItem,
+  deletePlantItem,
+} from "@workspace/api-client-react";
+import { toPlant } from "../lib/apiTransforms";
+import { toast } from "sonner";
+import type { PlantStatus } from "../types";
+import { useConfirm } from "../components/ui/ConfirmDialog";
+
+const PLANT_STATUSES: PlantStatus[] = [
+  "available",
+  "on_site",
+  "maintenance",
+  "hired_in",
+  "disposed",
+];
+
+const emptyForm = {
+  name: "",
+  make: "",
+  model: "",
+  year: "",
+  registration: "",
+  category: "",
+  owned: true,
+  daily_rate: "",
+  service_due: "",
+  mot_due: "",
+  thorough_exam_due: "",
+  notes: "",
+};
+
+export function PlantPage() {
+  const confirm = useConfirm();
+  const { state, dispatch } = useApp();
+  const { plant } = state;
+  const [, setLocation] = useLocation();
+
+  const [selected, setSelected] = useState<string | null>(null);
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [showModal, setShowModal] = useState(false);
+  const [form, setForm] = useState(emptyForm);
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [saving, setSaving] = useState(false);
+
+  const filtered = plant.filter(
+    (p) => statusFilter === "all" || p.status === statusFilter,
+  );
+  const selectedPlant = selected ? plant.find((p) => p.id === selected) : null;
+
+  const STATUS_OPTIONS = [
+    { id: "all", label: "All" },
+    { id: "available", label: "Available" },
+    { id: "on_site", label: "On Site" },
+    { id: "maintenance", label: "Workshop" },
+    { id: "hired_in", label: "Hired In" },
+  ];
+
+  function getPlantAlerts(p: (typeof plant)[0]) {
+    const warnings: string[] = [];
+    const serviceDays = daysUntil(p.service_due);
+    if (serviceDays !== null && serviceDays <= 14)
+      warnings.push(
+        `Service ${serviceDays <= 0 ? "OVERDUE" : `in ${serviceDays}d`}`,
+      );
+    const teDays = daysUntil(p.thorough_exam_due);
+    if (teDays !== null && teDays <= 30)
+      warnings.push(`LOLER Exam ${teDays <= 0 ? "EXPIRED" : `in ${teDays}d`}`);
+    return warnings;
+  }
+
+  function openNew() {
+    setForm(emptyForm);
+    setErrors({});
+    setShowModal(true);
+  }
+
+  function validate() {
+    const e: Record<string, string> = {};
+    if (!form.name.trim()) e.name = "Name is required";
+    return e;
+  }
+
+  async function handleSubmit() {
+    const e = validate();
+    if (Object.keys(e).length) {
+      setErrors(e);
+      return;
+    }
+    setSaving(true);
+    try {
+      const result = await createPlantItem({
+        name: form.name.trim(),
+        make: form.make || undefined,
+        model: form.model || undefined,
+        year: form.year ? parseInt(form.year) : undefined,
+        registration: form.registration || undefined,
+        category: form.category || "other",
+        owned: form.owned,
+        status: "available",
+        dailyRate: form.daily_rate ? parseFloat(form.daily_rate) : undefined,
+        serviceDue: form.service_due || undefined,
+        motDue: form.mot_due || undefined,
+        thoroughExamDue: form.thorough_exam_due || undefined,
+        notes: form.notes || undefined,
+      } as any);
+      dispatch({ type: "ADD_PLANT", plant: toPlant(result) });
+      setShowModal(false);
+      toast.success(`${result.name} added to fleet`);
+    } catch {
+      toast.error("Failed to add plant item");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function updateStatus(id: string, status: PlantStatus) {
+    const prev = plant.find((p) => p.id === id);
+    dispatch({ type: "UPDATE_PLANT", id, updates: { status } });
+    try {
+      await updatePlantItem(id, { status });
+    } catch {
+      if (prev)
+        dispatch({
+          type: "UPDATE_PLANT",
+          id,
+          updates: { status: prev.status },
+        });
+      toast.error("Failed to update status");
+    }
+  }
+
+  async function handleDelete(id: string, name: string) {
+    const ok = await confirm(
+      `Delete ${name}? This cannot be undone.`,
+    );
+    if (!ok) return;
+    try {
+      await deletePlantItem(id);
+      dispatch({ type: "REMOVE_PLANT", id });
+      setSelected(null);
+      toast.success(`${name} removed from fleet`);
+    } catch {
+      toast.error("Failed to delete plant item");
+    }
+  }
+
+  return (
+    <div className="space-y-5">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-xl font-semibold" style={{ color: "var(--ink)" }}>
+            Plant & Machinery
+          </h1>
+          <p className="text-sm mt-0.5" style={{ color: "var(--muted)" }}>
+            Fleet tracking, service & LOLER compliance
+          </p>
+        </div>
+        <Btn onClick={openNew}>
+          <Plus className="w-4 h-4" strokeWidth={1.5} /> Add Plant
+        </Btn>
+      </div>
+
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <StatCard
+          accent
+          label="On Site"
+          value={plant.filter((p) => p.status === "on_site").length.toString()}
+          sub="Currently deployed"
+        />
+        <StatCard
+          label="Available"
+          value={plant
+            .filter((p) => p.status === "available")
+            .length.toString()}
+          sub="Ready for site"
+        />
+        <StatCard
+          danger={plant.filter((p) => p.status === "maintenance").length > 0}
+          label="Off The Road"
+          value={plant
+            .filter((p) => p.status === "maintenance")
+            .length.toString()}
+          sub="Under maintenance"
+          actionLabel={
+            plant.filter((p) => p.status === "maintenance").length > 0
+              ? "Book in"
+              : undefined
+          }
+          onAction={() => setStatusFilter("maintenance")}
+        />
+        <StatCard
+          label="Owned"
+          value={plant.filter((p) => p.owned).length.toString()}
+          sub="Company assets"
+        />
+      </div>
+
+      <div
+        className="flex items-center gap-1 overflow-x-auto"
+        style={{ borderBottom: "1px solid var(--border)" }}
+      >
+        {STATUS_OPTIONS.map((opt) => {
+          const count =
+            opt.id === "all"
+              ? plant.length
+              : plant.filter((p) => p.status === opt.id).length;
+          return (
+            <button
+              key={opt.id}
+              onClick={() => setStatusFilter(opt.id)}
+              className="px-4 py-2.5 text-sm transition-colors whitespace-nowrap flex items-center gap-1.5"
+              style={
+                statusFilter === opt.id
+                  ? {
+                      color: "var(--ink)",
+                      fontWeight: 600,
+                      borderBottom: "2px solid var(--accent)",
+                      marginBottom: "-1px",
+                    }
+                  : { color: "var(--muted)" }
+              }
+            >
+              {opt.label}
+              <span
+                className="inline-flex items-center justify-center px-1.5 text-[11px] font-bold"
+                style={{
+                  fontFamily: "var(--font-heading)",
+                  backgroundColor:
+                    statusFilter === opt.id
+                      ? "var(--accent-bg)"
+                      : "var(--surface-3)",
+                  color:
+                    statusFilter === opt.id ? "var(--accent)" : "var(--muted-2)",
+                  minWidth: "18px",
+                }}
+              >
+                {count}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
+        <div className={selectedPlant ? "xl:col-span-2" : "xl:col-span-3"}>
+          <Panel title="Plant Register" badge={filtered.length} noPad>
+            {filtered.length === 0 ? (
+              <EmptyState
+                icon={Truck}
+                title={
+                  plant.length === 0
+                    ? "No assets yet"
+                    : "No plant items match this filter"
+                }
+                description={
+                  plant.length === 0
+                    ? "Track your fleet's location, ownership and compliance dates in one place."
+                    : "Try a different status filter."
+                }
+                primaryLabel={plant.length === 0 ? "Add your first asset" : undefined}
+                onPrimary={plant.length === 0 ? openNew : undefined}
+                secondaryLabel="Import from spreadsheet"
+                onSecondary={() => setLocation("/import")}
+              />
+            ) : (
+              filtered.map((p, i) => {
+                const alerts = getPlantAlerts(p);
+                const isOverdue =
+                  (daysUntil(p.service_due) !== null &&
+                    (daysUntil(p.service_due) as number) <= 0) ||
+                  (daysUntil(p.thorough_exam_due) !== null &&
+                    (daysUntil(p.thorough_exam_due) as number) <= 0);
+                const needsAttention = p.status === "maintenance" || alerts.length > 0;
+                const rowTint = isOverdue
+                  ? "var(--danger-bg)"
+                  : needsAttention
+                    ? "var(--warning-bg)"
+                    : undefined;
+                const rowBorderColor = isOverdue
+                  ? "var(--danger)"
+                  : needsAttention
+                    ? "var(--warning)"
+                    : "transparent";
+                return (
+                  <div
+                    key={p.id}
+                    onClick={() => setSelected(selected === p.id ? null : p.id)}
+                    className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4 px-5 py-4 cursor-pointer transition-colors hover:bg-[var(--surface-2)] group"
+                    style={{
+                      borderBottom:
+                        i < filtered.length - 1 ? "1px solid var(--border)" : "none",
+                      backgroundColor:
+                        selected === p.id ? "var(--surface-2)" : rowTint,
+                      borderLeft: `3px solid ${rowBorderColor}`,
+                    }}
+                  >
+                    <div
+                      className="w-8 h-8 flex items-center justify-center flex-shrink-0"
+                      style={{
+                        backgroundColor: "var(--surface-3)",
+                        border: "1px solid var(--border)",
+                      }}
+                    >
+                      {p.status === "maintenance" ? (
+                        <Wrench
+                          className="w-3.5 h-3.5"
+                          strokeWidth={1.5}
+                          style={{ color: "var(--warning)" }}
+                        />
+                      ) : (
+                        <Truck
+                          className="w-3.5 h-3.5"
+                          strokeWidth={1.5}
+                          style={{ color: "var(--muted-2)" }}
+                        />
+                      )}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 mb-0.5">
+                        <span
+                          className="text-sm font-semibold truncate"
+                          style={{ color: "var(--ink)" }}
+                        >
+                          {p.name}
+                        </span>
+                        {alerts.length > 0 && (
+                          <AlertTriangle
+                            className="w-3.5 h-3.5 flex-shrink-0"
+                            strokeWidth={1.5}
+                            style={{ color: isOverdue ? "var(--danger)" : "var(--warning)" }}
+                          />
+                        )}
+                        {!p.owned && (
+                          <span
+                            className="flex-shrink-0 text-[10px] font-bold uppercase tracking-wider px-2 py-0.5"
+                            style={{
+                              backgroundColor: "var(--surface-3)",
+                              color: "var(--ink-2)",
+                            }}
+                          >
+                            Hired In
+                          </span>
+                        )}
+                      </div>
+                      <div
+                        className="text-xs flex items-center gap-2 truncate"
+                        style={{ color: "var(--muted)" }}
+                      >
+                        <span className="font-mono tnum">
+                          {p.registration ?? "No Reg"}
+                        </span>
+                        <span>&middot;</span>
+                        <span>
+                          {p.make} {p.model}
+                        </span>
+                        {p.year && (
+                          <>
+                            <span>&middot;</span>
+                            <span className="font-mono tnum">{p.year}</span>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-4 flex-shrink-0">
+                      <Badge status={p.status} />
+                      {p.daily_rate && (
+                        <div className="w-24 hidden lg:block flex-shrink-0 text-right">
+                          <div
+                            className="text-[10px] font-bold uppercase tracking-widest mb-1"
+                            style={{ color: "var(--muted)" }}
+                          >
+                            Day Rate
+                          </div>
+                          <div
+                            className="text-sm font-medium font-mono tnum"
+                            style={{ color: "var(--ink)" }}
+                          >
+                            {formatCurrency(p.daily_rate)}
+                          </div>
+                        </div>
+                      )}
+                      <ChevronRight
+                        className="w-4 h-4 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
+                        strokeWidth={1.5}
+                        style={{ color: "var(--muted)" }}
+                      />
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </Panel>
+        </div>
+
+        {selectedPlant && (
+          <div>
+            <Panel
+              actions={
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={() =>
+                      handleDelete(selectedPlant.id, selectedPlant.name)
+                    }
+                    className="p-1 transition-colors hover:bg-red-50"
+                    style={{ color: "var(--danger)" }}
+                  >
+                    <Trash2 className="w-4 h-4" strokeWidth={1.5} />
+                  </button>
+                  <button
+                    onClick={() => setSelected(null)}
+                    className="p-1 transition-colors hover:bg-[var(--surface-3)]"
+                    style={{ color: "var(--muted)" }}
+                  >
+                    <X className="w-4 h-4" strokeWidth={1.5} />
+                  </button>
+                </div>
+              }
+            >
+              <div className="space-y-6">
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <Badge status={selectedPlant.status} />
+                    {!selectedPlant.owned && (
+                      <span
+                        className="flex-shrink-0 text-[10px] font-bold uppercase tracking-wider px-2 py-0.5"
+                        style={{ backgroundColor: "var(--surface-3)", color: "var(--ink-2)" }}
+                      >
+                        Hired In
+                      </span>
+                    )}
+                  </div>
+                  <p
+                    className="text-lg font-semibold"
+                    style={{
+                      color: "var(--ink)",
+                      fontFamily: "var(--font-heading)",
+                    }}
+                  >
+                    {selectedPlant.name}
+                  </p>
+                </div>
+
+                <div>
+                  <p
+                    className="text-[10px] font-bold uppercase tracking-widest mb-2"
+                    style={{ color: "var(--muted)" }}
+                  >
+                    Status
+                  </p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {PLANT_STATUSES.filter((s) => s !== "disposed").map((s) => (
+                      <button
+                        key={s}
+                        onClick={() => updateStatus(selectedPlant.id, s)}
+                        className="px-2.5 py-1.5 text-xs font-medium transition-colors capitalize"
+                        style={
+                          selectedPlant.status === s
+                            ? { backgroundColor: "var(--accent)", color: "#ffffff" }
+                            : {
+                                backgroundColor: "transparent",
+                                color: "var(--ink-2)",
+                                border: "1px solid var(--border)",
+                              }
+                        }
+                      >
+                        {s.replace("_", " ")}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div
+                  className="space-y-0 pt-2"
+                  style={{ borderTop: "1px solid var(--border)" }}
+                >
+                  {[
+                    {
+                      label: "Make / Model",
+                      value:
+                        `${selectedPlant.make ?? "—"} ${selectedPlant.model ?? ""}`.trim(),
+                    },
+                    {
+                      label: "Year",
+                      value: selectedPlant.year?.toString() ?? "—",
+                      mono: true,
+                    },
+                    {
+                      label: "Registration",
+                      value: selectedPlant.registration ?? "—",
+                      mono: true,
+                    },
+                    { label: "Category", value: selectedPlant.category },
+                    {
+                      label: "Day Rate",
+                      value: selectedPlant.daily_rate
+                        ? formatCurrency(selectedPlant.daily_rate)
+                        : "—",
+                      mono: true,
+                    },
+                    {
+                      label: "Current Job",
+                      value: selectedPlant.current_job?.title ?? "—",
+                    },
+                  ].map(({ label, value, mono }) => (
+                    <div
+                      key={label}
+                      className="flex justify-between items-baseline gap-3 py-2.5"
+                      style={{ borderBottom: "1px solid var(--surface-3)" }}
+                    >
+                      <span
+                        className="text-xs font-medium flex-shrink-0"
+                        style={{ color: "var(--muted)" }}
+                      >
+                        {label}
+                      </span>
+                      <span
+                        className={cn(
+                          "text-sm text-right",
+                          mono && "font-mono tnum",
+                        )}
+                        style={{ color: "var(--ink)" }}
+                      >
+                        {value}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+
+                <div>
+                  <p
+                    className="text-[10px] font-bold uppercase tracking-widest mb-2"
+                    style={{ color: "var(--muted)" }}
+                  >
+                    Compliance
+                  </p>
+                  <div className="space-y-0">
+                    {[
+                      {
+                        label: "Service Due",
+                        value: selectedPlant.service_due,
+                      },
+                      { label: "MOT Due", value: selectedPlant.mot_due },
+                      {
+                        label: "LOLER Exam",
+                        value: selectedPlant.thorough_exam_due,
+                      },
+                    ].map(({ label, value }) => {
+                      const days = daysUntil(value);
+                      const isOverdue = days !== null && days <= 0;
+                      const isDue = days !== null && days > 0 && days <= 30;
+                      return (
+                        <div
+                          key={label}
+                          className="flex justify-between items-center py-2.5"
+                          style={{ borderBottom: "1px solid var(--surface-3)" }}
+                        >
+                          <span
+                            className="text-xs font-medium"
+                            style={{ color: "var(--muted)" }}
+                          >
+                            {label}
+                          </span>
+                          <span
+                            className="text-sm font-mono tnum"
+                            style={{
+                              color: isOverdue
+                                ? "var(--danger)"
+                                : isDue
+                                  ? "var(--warning)"
+                                  : value
+                                    ? "var(--success)"
+                                    : "var(--muted-2)",
+                            }}
+                          >
+                            {value ? formatDate(value) : "N/A"}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {getPlantAlerts(selectedPlant).length > 0 && (
+                  <div
+                    className="space-y-1.5 p-3"
+                    style={{
+                      backgroundColor: "var(--danger-bg)",
+                      border: "1px solid rgba(178,58,38,0.2)",
+                    }}
+                  >
+                    {getPlantAlerts(selectedPlant).map((w) => (
+                      <div
+                        key={w}
+                        className="flex items-center gap-2 text-xs font-medium"
+                        style={{ color: "var(--danger)" }}
+                      >
+                        <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" strokeWidth={1.5} />
+                        {w}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {selectedPlant.notes && (
+                  <div className="pt-2">
+                    <p
+                      className="text-[10px] font-bold uppercase tracking-widest mb-2"
+                      style={{ color: "var(--muted)" }}
+                    >
+                      Notes
+                    </p>
+                    <p
+                      className="text-sm leading-relaxed"
+                      style={{ color: "var(--ink-2)" }}
+                    >
+                      {selectedPlant.notes}
+                    </p>
+                  </div>
+                )}
+              </div>
+            </Panel>
+          </div>
+        )}
+      </div>
+
+      <Modal
+        open={showModal}
+        onClose={() => setShowModal(false)}
+        title="Add Plant Item"
+      >
+        <div className="space-y-4">
+          <Field label="Name / Description" required>
+            <Input
+              value={form.name}
+              onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
+              placeholder="e.g. 13T Tracked Excavator"
+            />
+            {errors.name && (
+              <p className="mt-1 text-xs" style={{ color: "var(--danger)" }}>
+                {errors.name}
+              </p>
+            )}
+          </Field>
+          <div className="grid grid-cols-3 gap-3">
+            <Field label="Make">
+              <Input
+                value={form.make}
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, make: e.target.value }))
+                }
+                placeholder="e.g. Caterpillar"
+              />
+            </Field>
+            <Field label="Model">
+              <Input
+                value={form.model}
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, model: e.target.value }))
+                }
+                placeholder="e.g. 313"
+              />
+            </Field>
+            <Field label="Year">
+              <Input
+                type="number"
+                value={form.year}
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, year: e.target.value }))
+                }
+                placeholder="2021"
+              />
+            </Field>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Registration">
+              <Input
+                value={form.registration}
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, registration: e.target.value }))
+                }
+                placeholder="e.g. BM21 XYZ"
+              />
+            </Field>
+            <Field label="Category">
+              <Input
+                value={form.category}
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, category: e.target.value }))
+                }
+                placeholder="e.g. Excavator"
+              />
+            </Field>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Daily Rate (£)">
+              <Input
+                type="number"
+                value={form.daily_rate}
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, daily_rate: e.target.value }))
+                }
+                placeholder="0.00"
+              />
+            </Field>
+            <Field label="Ownership">
+              <Select
+                value={form.owned ? "owned" : "hired"}
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, owned: e.target.value === "owned" }))
+                }
+              >
+                <option value="owned">Owned</option>
+                <option value="hired">Hired In</option>
+              </Select>
+            </Field>
+          </div>
+          <div>
+            <div
+              className="text-xs font-mono uppercase tracking-wider mb-3"
+              style={{ color: "var(--muted)" }}
+            >
+              Compliance Dates
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Next Service Due">
+                <Input
+                  type="date"
+                  value={form.service_due}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, service_due: e.target.value }))
+                  }
+                />
+              </Field>
+              <Field label="MOT Due">
+                <Input
+                  type="date"
+                  value={form.mot_due}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, mot_due: e.target.value }))
+                  }
+                />
+              </Field>
+              <Field label="LOLER Exam Due" hint="LOLER Thorough Examination">
+                <Input
+                  type="date"
+                  value={form.thorough_exam_due}
+                  onChange={(e) =>
+                    setForm((f) => ({
+                      ...f,
+                      thorough_exam_due: e.target.value,
+                    }))
+                  }
+                />
+              </Field>
+            </div>
+          </div>
+          <Field label="Notes">
+            <Textarea
+              value={form.notes}
+              onChange={(e) =>
+                setForm((f) => ({ ...f, notes: e.target.value }))
+              }
+              placeholder="Any relevant notes..."
+              rows={2}
+            />
+          </Field>
+          <div className="flex gap-3 pt-2">
+            <Btn
+              className="flex-1 justify-center"
+              onClick={handleSubmit}
+              disabled={saving}
+            >
+              {saving ? "Adding…" : "Add to Fleet"}
+            </Btn>
+            <Btn variant="ghost" onClick={() => setShowModal(false)}>
+              Cancel
+            </Btn>
+          </div>
+        </div>
+      </Modal>
+    </div>
+  );
+}

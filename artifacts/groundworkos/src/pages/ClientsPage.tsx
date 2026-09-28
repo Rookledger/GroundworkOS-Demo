@@ -1,0 +1,679 @@
+import { useState } from "react";
+import {
+  Plus,
+  Mail,
+  Phone,
+  X,
+  ChevronRight,
+  Building2,
+  MapPin,
+  Trash2,
+  Pencil,
+  Users,
+  Search,
+} from "lucide-react";
+import { useLocation } from "wouter";
+import { Panel } from "../components/ui/Panel";
+import { StatCard } from "../components/ui/StatCard";
+import { Btn } from "../components/ui/Btn";
+import { SearchInput } from "../components/ui/SearchInput";
+import { ListPanel } from "../components/ui/ListPanel";
+import { EmptyState } from "../components/ui/EmptyState";
+import { Modal, Field, Input, Textarea } from "../components/ui/Modal";
+import { cn, formatCurrency } from "../lib/utils";
+import { useApp } from "../store/AppContext";
+import {
+  createClient,
+  updateClient,
+  deleteClient,
+} from "@workspace/api-client-react";
+import { toClient } from "../lib/apiTransforms";
+import type { Client } from "../types";
+import { toast } from "sonner";
+import { useConfirm } from "../components/ui/ConfirmDialog";
+
+const emptyForm = {
+  company_name: "",
+  contact_name: "",
+  email: "",
+  phone: "",
+  address: "",
+  vat_number: "",
+  notes: "",
+};
+
+export function ClientsPage() {
+  const confirm = useConfirm();
+  const { state, dispatch } = useApp();
+  const { clients } = state;
+  const [, navigate] = useLocation();
+
+  const [search, setSearch] = useState("");
+  const [selected, setSelected] = useState<string | null>(null);
+  const [showModal, setShowModal] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [form, setForm] = useState(emptyForm);
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [saving, setSaving] = useState(false);
+
+  const filtered = clients
+    .filter((c) => {
+      if (!search) return true;
+      const q = search.toLowerCase();
+      return (
+        c.company_name.toLowerCase().includes(q) ||
+        (c.contact_name ?? "").toLowerCase().includes(q) ||
+        (c.email ?? "").toLowerCase().includes(q)
+      );
+    })
+    .sort((a, b) => b.total_value - a.total_value);
+
+  const selectedClient = selected
+    ? clients.find((c) => c.id === selected)
+    : null;
+  const totalValue = clients.reduce((s, c) => s + c.total_value, 0);
+  const totalJobs = clients.reduce((s, c) => s + c.total_jobs, 0);
+
+  function openNew() {
+    setEditingId(null);
+    setForm(emptyForm);
+    setErrors({});
+    setShowModal(true);
+  }
+
+  function openEdit(client: Client) {
+    setEditingId(client.id);
+    setForm({
+      company_name: client.company_name,
+      contact_name: client.contact_name ?? "",
+      email: client.email ?? "",
+      phone: client.phone ?? "",
+      address: client.address ?? "",
+      vat_number: client.vat_number ?? "",
+      notes: client.notes ?? "",
+    });
+    setErrors({});
+    setShowModal(true);
+  }
+
+  function validate() {
+    const e: Record<string, string> = {};
+    if (!form.company_name.trim()) e.company_name = "Company name is required";
+    return e;
+  }
+
+  async function handleSubmit() {
+    const e = validate();
+    if (Object.keys(e).length) {
+      setErrors(e);
+      return;
+    }
+    setSaving(true);
+    try {
+      if (editingId) {
+        const result = await updateClient(editingId, {
+          companyName: form.company_name.trim(),
+          contactName: form.contact_name || undefined,
+          email: form.email || undefined,
+          phone: form.phone || undefined,
+          address: form.address || undefined,
+          vatNumber: form.vat_number || undefined,
+          notes: form.notes || undefined,
+        });
+        dispatch({
+          type: "UPDATE_CLIENT",
+          id: editingId,
+          updates: toClient(result),
+        });
+        setShowModal(false);
+        toast.success("Client updated");
+      } else {
+        const result = await createClient({
+          companyName: form.company_name.trim(),
+          contactName: form.contact_name || undefined,
+          email: form.email || undefined,
+          phone: form.phone || undefined,
+          address: form.address || undefined,
+          vatNumber: form.vat_number || undefined,
+          notes: form.notes || undefined,
+        } as any);
+        dispatch({ type: "ADD_CLIENT", client: toClient(result) });
+        setShowModal(false);
+        toast.success(`${result.companyName} added`);
+      }
+    } catch {
+      toast.error(
+        editingId ? "Failed to update client" : "Failed to add client",
+      );
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleDelete(id: string, name: string) {
+    const ok = await confirm(
+      `Delete ${name}? This cannot be undone.`,
+    );
+    if (!ok) return;
+    try {
+      await deleteClient(id);
+      dispatch({ type: "REMOVE_CLIENT", id });
+      setSelected(null);
+      toast.success(`${name} deleted`);
+    } catch {
+      toast.error("Failed to delete client");
+    }
+  }
+
+  return (
+    <div className="max-w-[1600px] mx-auto space-y-6">
+      <div className="flex items-center justify-between mb-2">
+        <h1
+          className="text-2xl font-bold"
+          style={{
+            fontFamily: "var(--font-heading)",
+            color: "var(--ink)",
+            letterSpacing: "-0.02em",
+          }}
+        >
+          Clients
+        </h1>
+        <Btn onClick={openNew}>
+          <Plus className="w-4 h-4" strokeWidth={1.5} /> New Client
+        </Btn>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <StatCard
+          accent
+          label="Total Clients"
+          value={clients.length}
+          sub="Active directory"
+        />
+        <StatCard
+          label="Total Jobs"
+          value={totalJobs}
+          sub="Across all clients"
+        />
+        <StatCard
+          label="Total Value"
+          value={formatCurrency(totalValue)}
+          sub="All-time revenue"
+        />
+      </div>
+
+      <div className="flex flex-col sm:flex-row sm:items-center gap-1.5 sm:gap-3">
+        <SearchInput
+          value={search}
+          onChange={setSearch}
+          placeholder="Search clients..."
+          className="py-2 w-full max-w-sm focus:outline-none transition-colors"
+        />
+        {clients.length > 0 && (
+          <span className="text-xs" style={{ color: "var(--muted-2)" }}>
+            Sorted by lifetime value
+          </span>
+        )}
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
+        <div className={selectedClient ? "xl:col-span-2" : "xl:col-span-3"}>
+          {clients.length === 0 ? (
+            <Panel title="Client Directory" noPad>
+              <EmptyState
+                icon={Users}
+                title="No clients yet"
+                description="Clients are the companies and contacts you work for — every job, quote and invoice is tied back to one."
+                primaryLabel="Add your first client"
+                onPrimary={openNew}
+                secondaryLabel="Import from spreadsheet"
+                onSecondary={() => navigate("/import")}
+                hint="You can also import an existing client list as a CSV."
+              />
+            </Panel>
+          ) : filtered.length === 0 ? (
+            <Panel title="Client Directory" noPad>
+              <EmptyState
+                icon={Search}
+                title="No clients match your search"
+                description={`No results for "${search}". Try a different name or email.`}
+                primaryLabel="Clear search"
+                onPrimary={() => setSearch("")}
+              />
+            </Panel>
+          ) : (
+          <ListPanel
+            title="Client Directory"
+            items={filtered}
+            emptyMessage="No clients found"
+            renderRow={(client, i, total) => (
+              <div
+                key={client.id}
+                onClick={() =>
+                  setSelected(selected === client.id ? null : client.id)
+                }
+                className={cn(
+                  "flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-5 px-5 py-4 cursor-pointer transition-colors group",
+                  selected === client.id
+                    ? "bg-[var(--surface-2)]"
+                    : "hover:bg-[var(--surface-2)]",
+                )}
+                style={{
+                  borderBottom: i < total - 1 ? "1px solid var(--border)" : "none",
+                  borderLeft:
+                    selected === client.id
+                      ? "3px solid var(--accent)"
+                      : "3px solid transparent",
+                }}
+              >
+                <div className="flex items-start gap-3 flex-1 min-w-0">
+                  <div
+                    className="w-10 h-10 flex items-center justify-center text-sm font-bold flex-shrink-0"
+                    style={{
+                      backgroundColor: "var(--surface-3)",
+                      color: "var(--ink-2)",
+                      border: "1px solid var(--border)",
+                    }}
+                  >
+                    {client.company_name[0]}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div
+                      className="text-sm font-semibold truncate"
+                      style={{ color: "var(--ink)" }}
+                    >
+                      {client.company_name}
+                    </div>
+                    <div
+                      className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs mt-0.5"
+                      style={{ color: "var(--muted)" }}
+                    >
+                      <span className="truncate">
+                        {client.contact_name ?? "No contact"}
+                      </span>
+                      {client.email && (
+                        <span className="flex items-center gap-1.5 truncate">
+                          <Mail className="w-3 h-3 flex-shrink-0" strokeWidth={1.5} />
+                          <span className="truncate font-mono">{client.email}</span>
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+                <div className="flex items-center justify-between sm:justify-end gap-6 pl-[52px] sm:pl-0 flex-shrink-0">
+                  <div className="text-right w-16 sm:w-28 flex-shrink-0">
+                    <div
+                      className="text-[10px] font-bold uppercase tracking-widest mb-1"
+                      style={{ color: "var(--muted)" }}
+                    >
+                      Jobs
+                    </div>
+                    <div
+                      className="text-sm font-medium tnum"
+                      style={{ color: "var(--ink)" }}
+                    >
+                      {client.total_jobs}
+                    </div>
+                  </div>
+                  <div className="text-right w-24 sm:w-28 flex-shrink-0">
+                    <div
+                      className="text-[10px] font-bold uppercase tracking-widest mb-1"
+                      style={{ color: "var(--muted)" }}
+                    >
+                      Value
+                    </div>
+                    <div
+                      className="text-sm font-medium tnum"
+                      style={{ color: "var(--ink)" }}
+                    >
+                      {formatCurrency(client.total_value)}
+                    </div>
+                  </div>
+                  <ChevronRight
+                    className={cn(
+                      "w-4 h-4 flex-shrink-0 transition-opacity hidden sm:block",
+                      selected === client.id
+                        ? "opacity-100"
+                        : "opacity-0 group-hover:opacity-100",
+                    )}
+                    style={{ color: "var(--muted)" }}
+                    strokeWidth={1.5}
+                  />
+                </div>
+              </div>
+            )}
+          />
+          )}
+        </div>
+
+        {selectedClient && (
+          <div>
+            <Panel
+              actions={
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => openEdit(selectedClient)}
+                    className="p-1.5 transition-colors hover:bg-[var(--surface-3)]"
+                    style={{ color: "var(--muted)" }}
+                    title="Edit client"
+                  >
+                    <Pencil className="w-4 h-4" strokeWidth={1.5} />
+                  </button>
+                  <button
+                    onClick={() =>
+                      handleDelete(
+                        selectedClient.id,
+                        selectedClient.company_name,
+                      )
+                    }
+                    className="p-1.5 transition-colors hover:bg-red-50"
+                    style={{ color: "var(--danger)" }}
+                    title="Delete client"
+                  >
+                    <Trash2 className="w-4 h-4" strokeWidth={1.5} />
+                  </button>
+                  <button
+                    onClick={() => setSelected(null)}
+                    className="hover:bg-[var(--surface-3)] p-1.5 transition-colors"
+                    style={{ color: "var(--muted)" }}
+                  >
+                    <X className="w-4 h-4" strokeWidth={1.5} />
+                  </button>
+                </div>
+              }
+            >
+              <div className="space-y-6">
+                <div className="flex items-start gap-4">
+                  <div
+                    className="w-12 h-12 flex items-center justify-center text-lg font-bold flex-shrink-0"
+                    style={{
+                      backgroundColor: "var(--surface-3)",
+                      color: "var(--ink)",
+                      border: "1px solid var(--border)",
+                    }}
+                  >
+                    {selectedClient.company_name[0]}
+                  </div>
+                  <div className="pt-1">
+                    <h2
+                      className="text-xl font-bold leading-none mb-1.5"
+                      style={{
+                        fontFamily: "var(--font-heading)",
+                        color: "var(--ink)",
+                      }}
+                    >
+                      {selectedClient.company_name}
+                    </h2>
+                    <div
+                      className="flex items-center gap-2 text-sm"
+                      style={{ color: "var(--muted)" }}
+                    >
+                      <span className="font-medium">
+                        {selectedClient.contact_name ?? "No contact"}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div
+                    className="p-4 "
+                    style={{
+                      backgroundColor: "var(--surface-2)",
+                      border: "1px solid var(--border)",
+                    }}
+                  >
+                    <div
+                      className="text-[11px] font-bold uppercase tracking-widest mb-1"
+                      style={{ color: "var(--muted)" }}
+                    >
+                      Total Jobs
+                    </div>
+                    <div
+                      className="text-2xl font-bold font-mono tnum"
+                      style={{ color: "var(--ink)" }}
+                    >
+                      {selectedClient.total_jobs}
+                    </div>
+                  </div>
+                  <div
+                    className="p-4 "
+                    style={{
+                      backgroundColor: "var(--surface-2)",
+                      border: "1px solid var(--border)",
+                    }}
+                  >
+                    <div
+                      className="text-[11px] font-bold uppercase tracking-widest mb-1"
+                      style={{ color: "var(--muted)" }}
+                    >
+                      Total Value
+                    </div>
+                    <div
+                      className="text-2xl font-bold font-mono tnum"
+                      style={{ color: "var(--accent)" }}
+                    >
+                      {formatCurrency(selectedClient.total_value)}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-4">
+                  <h3
+                    className="text-[11px] font-bold uppercase tracking-widest"
+                    style={{
+                      color: "var(--muted)",
+                      fontFamily: "var(--font-heading)",
+                    }}
+                  >
+                    Contact Details
+                  </h3>
+                  <div
+                    className="space-y-3"
+                    style={{
+                      borderTop: "1px solid var(--border)",
+                      paddingTop: "12px",
+                    }}
+                  >
+                    {[
+                      {
+                        label: "Email",
+                        value: selectedClient.email,
+                        icon: <Mail className="w-3.5 h-3.5" strokeWidth={1.5} />,
+                      },
+                      {
+                        label: "Phone",
+                        value: selectedClient.phone,
+                        icon: <Phone className="w-3.5 h-3.5" strokeWidth={1.5} />,
+                      },
+                      {
+                        label: "Address",
+                        value: selectedClient.address,
+                        icon: <MapPin className="w-3.5 h-3.5" strokeWidth={1.5} />,
+                      },
+                      {
+                        label: "VAT No",
+                        value: selectedClient.vat_number,
+                        icon: <Building2 className="w-3.5 h-3.5" strokeWidth={1.5} />,
+                      },
+                    ].map(({ label, value, icon }) => (
+                      <div key={label} className="flex gap-3">
+                        <div
+                          className="w-6 flex-shrink-0 flex items-center justify-center mt-0.5"
+                          style={{ color: "var(--muted)" }}
+                        >
+                          {icon}
+                        </div>
+                        <div className="min-w-0">
+                          <div
+                            className="text-[10px] font-bold uppercase tracking-widest mb-0.5"
+                            style={{ color: "var(--muted)" }}
+                          >
+                            {label}
+                          </div>
+                          {value ? (
+                            <div
+                              className="text-sm font-medium truncate"
+                              style={{
+                                color: "var(--ink)",
+                                fontFamily:
+                                  label === "Email" ||
+                                  label === "Phone" ||
+                                  label === "VAT No"
+                                    ? "var(--font-heading)"
+                                    : "inherit",
+                              }}
+                            >
+                              {value}
+                            </div>
+                          ) : (
+                            <div
+                              className="text-sm italic"
+                              style={{ color: "var(--muted-2)" }}
+                            >
+                              Not provided
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {selectedClient.notes && (
+                  <div>
+                    <h3
+                      className="text-[11px] font-bold uppercase tracking-widest mb-3"
+                      style={{
+                        color: "var(--muted)",
+                        fontFamily: "var(--font-heading)",
+                      }}
+                    >
+                      Notes
+                    </h3>
+                    <div
+                      className="p-4 text-sm leading-relaxed whitespace-pre-wrap"
+                      style={{
+                        backgroundColor: "var(--surface)",
+                        border: "1px solid var(--border)",
+                        color: "var(--ink-2)",
+                      }}
+                    >
+                      {selectedClient.notes}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </Panel>
+          </div>
+        )}
+      </div>
+
+      <Modal
+        open={showModal}
+        onClose={() => setShowModal(false)}
+        title={editingId ? "Edit Client" : "New Client"}
+      >
+        <div className="space-y-4">
+          <Field label="Company Name" required>
+            <Input
+              value={form.company_name}
+              onChange={(e) =>
+                setForm((f) => ({ ...f, company_name: e.target.value }))
+              }
+              placeholder="e.g. Midlands Groundworks Ltd"
+            />
+            {errors.company_name && (
+              <p className="mt-1 text-xs" style={{ color: "var(--danger)" }}>
+                {errors.company_name}
+              </p>
+            )}
+          </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Contact Name">
+              <Input
+                value={form.contact_name}
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, contact_name: e.target.value }))
+                }
+                placeholder="e.g. John Smith"
+              />
+            </Field>
+            <Field label="VAT Number">
+              <Input
+                value={form.vat_number}
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, vat_number: e.target.value }))
+                }
+                placeholder="e.g. GB123456789"
+                className="font-mono"
+              />
+            </Field>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Email">
+              <Input
+                type="email"
+                value={form.email}
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, email: e.target.value }))
+                }
+                placeholder="john@company.co.uk"
+                className="font-mono"
+              />
+            </Field>
+            <Field label="Phone">
+              <Input
+                type="tel"
+                value={form.phone}
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, phone: e.target.value }))
+                }
+                placeholder="07700 900000"
+                className="font-mono"
+              />
+            </Field>
+          </div>
+          <Field label="Address">
+            <Textarea
+              value={form.address}
+              onChange={(e) =>
+                setForm((f) => ({ ...f, address: e.target.value }))
+              }
+              placeholder="123 Business Park, Birmingham, B1 1AA"
+              rows={2}
+            />
+          </Field>
+          <Field label="Notes">
+            <Textarea
+              value={form.notes}
+              onChange={(e) =>
+                setForm((f) => ({ ...f, notes: e.target.value }))
+              }
+              placeholder="Any relevant notes..."
+              rows={2}
+            />
+          </Field>
+          <div className="flex gap-3 pt-2">
+            <Btn
+              className="flex-1 justify-center"
+              onClick={handleSubmit}
+              disabled={saving}
+            >
+              {saving
+                ? editingId
+                  ? "Saving…"
+                  : "Adding…"
+                : editingId
+                  ? "Save Changes"
+                  : "Add Client"}
+            </Btn>
+            <Btn variant="ghost" onClick={() => setShowModal(false)}>
+              Cancel
+            </Btn>
+          </div>
+        </div>
+      </Modal>
+    </div>
+  );
+}

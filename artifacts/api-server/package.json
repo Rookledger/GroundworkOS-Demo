@@ -1,0 +1,21 @@
+{
+  "name": "@workspace/api-server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {},
+  "dependencies": {
+    "@workspace/api-zod": "workspace:*",
+    "@workspace/db": "workspace:*",
+    "@workspace/shared-role": "workspace:*",
+    "drizzle-orm": "catalog:",
+    "hono": "^4.9.9",
+    "resend": "^6.14.0",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260702.1",
+    "@types/node": "catalog:"
+  },
+  "description": "The real GroundworkOS API route handlers, bundled into the demo frontend and run in the browser (see artifacts/groundworkos/src/demo)."
+}

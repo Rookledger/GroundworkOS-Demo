@@ -1,0 +1,23 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "incremental": true,
+    "tsBuildInfoFile": ".tsbuildinfo",
+    "outDir": "dist",
+    "rootDir": "src",
+    "types": [
+      "@cloudflare/workers-types",
+      "@cloudflare/vitest-pool-workers/types"
+    ],
+    "lib": ["ES2022"],
+    "moduleResolution": "Bundler",
+    "noEmit": true
+  },
+  "include": ["src", "worker-configuration.d.ts"],
+  "exclude": ["node_modules", "dist"],
+  "references": [
+    { "path": "../../lib/shared-role" },
+    { "path": "../../lib/db" },
+    { "path": "../../lib/api-zod" }
+  ]
+}
